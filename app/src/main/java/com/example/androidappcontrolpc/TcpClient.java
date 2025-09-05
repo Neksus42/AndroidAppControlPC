@@ -1,5 +1,7 @@
 package com.example.androidappcontrolpc;
 
+import android.util.Log;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -30,22 +32,32 @@ public class TcpClient {
      * При неудаче ждёт 5 секунд и повторяет попытку.
      */
     public void connect(MainActivity activity) {
+        final String TAG = TcpClient.class.getSimpleName();
+
         new Thread(() -> {
+
+            Log.i(TAG, "Пытаемся подключиться к " + serverAddress + ":" + serverPort);
             try {
                 socket = new Socket(serverAddress, serverPort);
                 out = new PrintWriter(socket.getOutputStream(), true);
                 in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-
+                Log.i(TAG, "Подключение успешно установлено");
                 activity.UpdateSpinner();
+                activity.UpdateVolume();
 
                 if (!monitoring) {
+                    Log.d(TAG, "Запускаем мониторинг соединения…");
                     startConnectionMonitor(activity);
                 }
             } catch (IOException e) {
+                Log.e(TAG, "Не удалось подключиться: " + e.getMessage(), e);
+
                 e.printStackTrace();
                 try {
+                    Log.i(TAG, "Ждём 5с и пробуем ещё раз");
                     Thread.sleep(5000);
                 } catch (InterruptedException ie) {
+                    Log.e(TAG, "Пауза прервана", ie);
                     ie.printStackTrace();
                 }
                 connect(activity);
@@ -59,14 +71,16 @@ public class TcpClient {
         new Thread(() -> {
 while (true)
             {
+                final String TAG = "ReconnectWorker";
                 while (IsSleep) {
                     try {
-                        Thread.sleep(5000); // проверяем каждые 5 секунд
+                        Thread.sleep(5000);             // проверяем каждые 5 с
                     } catch (InterruptedException e) {
-                        e.printStackTrace();
+                        Log.e(TAG, "Thread interrupted", e);
                     }
+
                     if (!ServerChecker.isServerReachable(serverAddress, serverPort, 5000)) {
-                        System.out.println("Соединение потеряно. Попытка переподключения...");
+                        Log.w(TAG, "Соединение потеряно. Пробуем переподключиться…");
                         connect(activity);
                         break;
                     }
