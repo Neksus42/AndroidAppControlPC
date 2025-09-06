@@ -46,6 +46,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean spinnerUpdated = true;
 
     private TcpClient client;
+    private boolean IsConnectedMain = false;
 
     // Поток единственного чтения входящих строк
     private Thread receiverThread;
@@ -66,8 +67,10 @@ public class MainActivity extends AppCompatActivity {
 
         // --- Сеть ---
         client = new TcpClient(SERVER_IP, SERVER_PORT);
-        client.connect(this);           // твой метод коннекта (оставляем как есть)
-        startReceiverThread();          // стартуем ЕДИНСТВЕННЫЙ поток чтения
+        client.setMessageListener(this::handleMessage);
+        client.connect(this);         // твой метод коннекта (оставляем как есть)
+        IsConnectedMain = true;
+        //startReceiverThread();          // стартуем ЕДИНСТВЕННЫЙ поток чтения
 
         // --- Кнопки/спиннер ---
         ButtonToTurnOFF_PC = findViewById(R.id.button);
@@ -116,12 +119,8 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 volumeLabel.setText("Volume: " + progress + "%");
                 if (fromUser && !updatingFromServer) {
-                    if (throttleSend != null) ui.removeCallbacks(throttleSend);
-                    throttleSend = () -> {
-                        float v01 = progress / 100f;
-                        client.SendMessage("SetVolume:" + String.format(Locale.US, "%.3f", v01));
-                    };
-                    ui.postDelayed(throttleSend, 10); // троттлинг ~20 сообщений/сек
+                    float v01 = progress / 100f;
+                    client.SendMessage("SetVolume:" + String.format(Locale.US, "%.3f", v01));
                 }
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
@@ -132,80 +131,56 @@ public class MainActivity extends AppCompatActivity {
     }
 
     // ==== ЕДИНСТВЕННЫЙ поток чтения входящих линий ====
-    private void startReceiverThread() {
-        stopReceiverThread(); // на всякий случай
-        receiverRunning = true;
-        receiverThread = new Thread(() -> {
-            Gson gson = new Gson();
-            Type listType = new TypeToken<List<String>>() {}.getType();
 
-            while (receiverRunning) {
-                try {
-                    String line = client.GetMessage();  // ТВОЙ метод чтения одной строки
-                    if (line == null || line.isEmpty()) {
-                        // маленькая пауза, чтобы не крутить CPU в случае null
-                        Thread.sleep(10);
-                        continue;
-                    }
-                    line = line.trim();
 
-                    // 1) Синхронизация громкости: "VolumeSync:x"
-                    if (line.startsWith("VolumeSync:")) {
-                        try {
-                            float v01 = Float.parseFloat(line.substring("VolumeSync:".length()).trim());
-                            int percent = Math.max(0, Math.min(100, Math.round(v01 * 100f)));
-                            runOnUiThread(() -> {
-                                updatingFromServer = true;
-                                volumeSeek.setProgress(percent);
-                                volumeLabel.setText("Volume: " + percent + "%");
-                                updatingFromServer = false;
-                            });
-                        } catch (Exception ignored) {}
-                        continue;
-                    }
 
-                    // 2) Ответ на GetAudioDevices — JSON-массив (примерно: ["0: ...","1: ..."])
-                    if (line.startsWith("[") && line.endsWith("]")) {
-                        try {
-                            List<String> devicesList = gson.fromJson(line, listType);
-                            if (devicesList != null) {
-                                // добавим в начало "Выберите устройство"
-                                devicesList.add(0, "Выберите устройство");
-                                runOnUiThread(() -> {
-                                    ArrayAdapter<String> adapter = new ArrayAdapter<>(
-                                            MainActivity.this,
-                                            android.R.layout.simple_spinner_item,
-                                            devicesList
-                                    );
-                                    adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-                                    spinnerAudioDevices.setAdapter(adapter);
-                                    spinnerUpdated = true;
-                                });
-                            }
-                        } catch (Exception ignored) {}
-                        continue;
-                    }
+    private void handleMessage(String line) {
+        if (line == null || line.isEmpty()) return;
+        line = line.trim();
 
-                    // 3) Прочие ответы — если есть другие команды
-                    // if (line.startsWith("...")) { ... }
-
-                } catch (Throwable t) {
-                    // Не даём треду умереть из-за исключения
-                    t.printStackTrace();
-                    try { Thread.sleep(100); } catch (InterruptedException ignored) {}
-                }
-            }
-        }, "tcp-receiver");
-        receiverThread.start();
-    }
-
-    private void stopReceiverThread() {
-        receiverRunning = false;
-        if (receiverThread != null) {
-            try { receiverThread.interrupt(); } catch (Exception ignored) {}
-            receiverThread = null;
+        // 1) Синхронизация громкости
+        if (line.startsWith("VolumeSync:")) {
+            try {
+                float v01 = Float.parseFloat(line.substring("VolumeSync:".length()).trim());
+                int percent = Math.max(0, Math.min(100, Math.round(v01 * 100f)));
+                runOnUiThread(() -> {
+                    updatingFromServer = true;
+                    volumeSeek.setProgress(percent);
+                    volumeLabel.setText("Volume: " + percent + "%");
+                    updatingFromServer = false;
+                });
+            } catch (Exception ignored) {}
+            return;
         }
+
+        // 2) Ответ на GetAudioDevices — JSON массив
+        if (line.startsWith("[") && line.endsWith("]")) {
+            try {
+                Gson gson = new Gson();
+                Type listType = new TypeToken<List<String>>() {}.getType();
+                List<String> devicesList = gson.fromJson(line, listType);
+
+                if (devicesList != null) {
+                    devicesList.add(0, "Выберите устройство");
+                    runOnUiThread(() -> {
+                        ArrayAdapter<String> adapter = new ArrayAdapter<>(
+                                MainActivity.this,
+                                android.R.layout.simple_spinner_item,
+                                devicesList
+                        );
+                        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+                        spinnerAudioDevices.setAdapter(adapter);
+                        spinnerUpdated = true;
+                    });
+                }
+            } catch (Exception ignored) {}
+            return;
+        }
+
+        // 3) Прочие ответы (если будут добавляться новые команды)
+        // if (line.startsWith("...")) { ... }
     }
+
 
     // ==== ТЕПЕРЬ UpdateSpinner НЕ читает сокет! ====
     public void UpdateSpinner() {
@@ -220,7 +195,11 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         client.IsSleep = true;
-        client.connect(this);
+        if(!IsConnectedMain) {
+            client.connect(this);
+            //startReceiverThread();
+        IsConnectedMain = true;
+        }
         // поток чтения уже запущен в onCreate(); если хочешь — можно здесь проверять/перезапускать
     }
 
@@ -228,6 +207,8 @@ public class MainActivity extends AppCompatActivity {
     protected void onPause() {
         super.onPause();
         client.IsSleep = false;
+        IsConnectedMain = false;
+        client.disconnect();
         // по желанию можно останавливать приёмник:
         // stopReceiverThread();
     }

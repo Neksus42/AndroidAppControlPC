@@ -13,6 +13,15 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 
 public class TcpClient {
+
+
+
+
+    private Thread receiverThread;
+    private volatile boolean receiverRunning = false;
+    private MessageListener listener; // коллбек для сообщений
+
+
     private String serverAddress;
     private int serverPort;
     private Socket socket;
@@ -21,11 +30,19 @@ public class TcpClient {
     // Флаг для того, чтобы не запускать несколько мониторинговых потоков одновременно
     public volatile boolean monitoring = false;
     public volatile boolean IsSleep = false;
+
     public TcpClient(String serverAddress, int serverPort) {
         this.serverAddress = serverAddress;
         this.serverPort = serverPort;
     }
 
+
+    public interface MessageListener {
+        void onMessageReceived(String message);
+    }
+    public void setMessageListener(MessageListener listener) {
+        this.listener = listener;
+    }
     /**
      * Попытка установить соединение.
      * При успешном подключении вызывается activity.UpdateSpinner().
@@ -41,6 +58,8 @@ public class TcpClient {
                 socket = new Socket(serverAddress, serverPort);
                 out = new PrintWriter(socket.getOutputStream(), true);
                 in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                startReceiverThread(); // ← теперь тут
+
                 Log.i(TAG, "Подключение успешно установлено");
                 activity.UpdateSpinner();
                 activity.UpdateVolume();
@@ -134,4 +153,45 @@ while (true)
             return null;
         }
     }
+
+    private void startReceiverThread() {
+        stopReceiverThread();
+        receiverRunning = true;
+        receiverThread = new Thread(() -> {
+            try {
+                String line;
+                while (receiverRunning && (line = in.readLine()) != null) {
+                    if (!line.isEmpty() && listener != null) {
+                        listener.onMessageReceived(line.trim());
+                    }
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            } finally {
+                receiverRunning = false;
+            }
+        }, "tcp-receiver");
+        receiverThread.start();
+    }
+
+
+
+    private void stopReceiverThread() {
+        receiverRunning = false;
+        if (receiverThread != null) {
+            receiverThread.interrupt();
+            receiverThread = null;
+        }
+    }
+    public void disconnect() {
+        stopReceiverThread();
+        try {
+            if (socket != null && !socket.isClosed()) socket.close();
+            if (in != null) in.close();
+            if (out != null) out.close();
+        } catch (IOException ignored) {}
+        socket = null;
+    }
+
+
 }
